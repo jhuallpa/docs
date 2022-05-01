@@ -1,0 +1,179 @@
+#### Setting up Screenconnect with Nginx reverse proxy ####
+
+This is a compilation of different tutorials that I had to look for in order to make my project work. There are many tutorials on the internet
+but they didn't work, they were outdate or they had information missing. I tried to make this tutorial as simple as possible.
+
+Screenconnect version 20.3.31734.7751
+
+This project was tested on AWS t2.micro Debian 10 server
+ - 1gb ram
+ - 8gb SSD
+ - Security groups on AWS allowing ports for SSH (22) , Screenconnect (8040)Screenconnect relay (8041), Echo Reply (Ping), HTTP (80), HTTPS (443)
+ - Elastic IP assigned (public IP)
+ 
+ Assuming you alraedy got a domain name for example on google domains and have created an "A" record pointing to the AWS public IP.
+ You can try pinging your the dns name to make sure the domain is correctly configured.
+ 
+ I'm going to use "remote.mydomain.lab" as an example so please keep that in mind, you have to replace it with your own domain
+ I'm also going to assume you already installed the linux version of Screenconnect and got a message saying your host is http://localhost:8040/
+ 
+ This is an easier way to install an SSL certificate rather than trying to run the screenconnect configurator.
+ 
+ Install Certbot Nginx, run these 3 commands:
+ 
+ sudo apt update
+ 
+ sudo apt install python3-acme python3-certbot python3-mock python3-openssl python3-pkg-resources python3-pyparsing python3-zope.interface
+ 
+ sudo apt install python3-certbot-nginx
+ 
+ 
+ Once you intalled certbot, we are going to create the ssl certificates:
+ 
+ sudo certbot --nginx
+ 
+ A bunch of questions will prompt, they are easy to follow but don't forget to type the same domain you created in google domains
+ for this example my domain is: remote.mydomain.lab
+ You'll get a message asking you if you want to redirect : 1. no redirect , 2.redirect. Type 2 and proceed. 
+ You'll get another message pointing you the location of your certifications (they are created in .pem extension, no big deal)
+ Location of the cert and private key:
+ 
+ /etc/letsencrypt/live/remote.mydomain.lab/fullchain.pem
+ /etc/letsencrypt/live/remote.mydomain.lab/privkey.pem
+ 
+ Preparing a Strong Diffie-Helman for Nginx 
+ 
+ To make everything easier, you can create the file in the same folder where the certificates are, navigate to:
+ 
+ cd /etc/letsencrypt/live/remote.mydomain.lab
+ 
+ Once you are in the folder, run:
+ 
+ sudo openssl dhparam -out dhparam.pem 2048
+ 
+ Once the dhparam.pem file has been created the location of the file should be:
+ 
+ /etc/letsencrypt/live/remote.mydomain.lab/dhparam.pem
+ 
+ Now that we have all the files we need, we will configure Nginx:
+ 
+ we are going to navigate to: 
+ 
+ cd /etc/nginx/sites-available 
+ 
+ And create a file called 'screenconnect' :
+ 
+ sudo nano screenconnect
+ 
+And copy/paste this script, modify the script with your own domain/subdomain, I used: remote.mydomain.lab : 
+
+
+
+server {
+	listen 443 default_server ssl;
+	server_name remote.mydomain.lab;
+
+	ssl on;
+
+	## Type location of the pem files we created above(fullkey,privkey,dhparam):
+	ssl_certificate /etc/letsencrypt/live/remote.mydomain.lab/fullchain.pem;
+	ssl_certificate_key /etc/letsencrypt/live/remote.mydomain.lab/privkey.pem;
+	ssl_dhparam /etc/letsencrypt/live/remote.mydomain.lab/dhparam.pem;
+
+	ssl_session_cache shared:SSL:10m;
+	ssl_session_timeout 5m;
+	keepalive_timeout 60;
+	
+	## Using only newer TLS connections
+	ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+
+  ## Using newer ciphers
+	ssl_prefer_server_ciphers on;
+	ssl_ciphers 'EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH';
+
+	access_log  /var/log/nginx/app_screenconnect_access.log;
+	error_log   /var/log/nginx/app_screenconnect_error.log;
+
+	## Reverse proxy for screenconnect
+	location / {
+		proxy_pass http://127.0.0.1:8040;
+		proxy_redirect off;
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_max_temp_file_size 0;
+		client_max_body_size 50m;
+		client_body_buffer_size 256k;
+		proxy_connect_timeout 180;
+		proxy_send_timeout 180;
+		proxy_read_timeout 90;
+		proxy_buffer_size 16k;
+		proxy_buffers 4 64k;
+		proxy_busy_buffers_size 128k;
+		proxy_temp_file_write_size 128k;
+	}
+}
+
+## This will redirect from HTTP 80 to HTTPS
+server {
+	listen 80;
+	server_name remote.mydomain.lab;
+  
+	## 301 = permanent redirect, 302 = temporary redirect
+	return 301  https://remote.mydomain.lab$request_uri;
+}
+
+
+
+Once you have copied and modified everything according to your domain, save and exit.
+We are going to remove the default config that is also in that same folder.
+
+sudo rm default
+
+Now we are going to enable our site so we nagivate to :
+
+cd /etc/nginx/sites-enabled/
+
+And run the command: 
+
+sudo ln -s ../sites-available/screenconnect
+
+After enabling our site we can also remove the default file there with:
+
+rm default
+
+Restart nginx service:
+
+sudo service nginx restart
+
+Once it restarts you can try typing on your browser :  remote.mydomain.lab and it should take you to the screenconnect login page.
+
+
+## OPTIONAL ### : 
+
+Check if certbot auto-renewal is working:
+
+sudo certbot renew --dry-run 
+
+Modify screenconnect web.config file to point to your localhost for better security, screenconnect only points to htt:+:8040/
+
+sudo nano /opt/screenconnect/web.config
+
+Search for this key:
+
+<add key="WebServerListenUri" value="http://+:8040/" /> and change it to: <add key="WebServerListenUri" value="http://127.0.0.1:8040/" />
+
+Restart service :
+
+sudo service screenconnect restart
+
+If you want to launch sessions from linux ( only if you use linux as your main computer, if you use windows you don't need this.)
+
+ sudo nano /opt/screenconnect/web.config
+ 
+ add WebServerAddressableUri key below <add key="WebServerListenUri" value="http://+:8040/" /> (to make it easier to locate it for you) : 
+ 
+ <add key="WebServerAddressableUri" value="https://remote.mydomain.lab/"/>
+ 
+ Save and exit.
+ 
